@@ -8,14 +8,19 @@ import {
   Minus,
   X,
   Settings,
+  Mic,
+  MicOff,
 } from "lucide-react";
 import { cn } from "../../utils/cn";
 import type { MeetingStatus } from "../../types";
 
 interface HeaderBarProps {
   status: MeetingStatus;
+  isCapturing: boolean;
+  audioPeak?: number;
   isClickThrough: boolean;
   isProtected: boolean;
+  onToggleCapture: () => void;
   onToggleClickThrough: () => void;
   onToggleProtection: () => void;
   onStartDrag: () => void;
@@ -26,8 +31,11 @@ interface HeaderBarProps {
 
 export const HeaderBar: React.FC<HeaderBarProps> = ({
   status,
+  isCapturing,
+  audioPeak = 0,
   isClickThrough,
   isProtected,
+  onToggleCapture,
   onToggleClickThrough,
   onToggleProtection,
   onStartDrag,
@@ -39,7 +47,7 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
     switch (status) {
       case "listening":
         return {
-          label: "Listening",
+          label: isCapturing ? "Capturing" : "Listening",
           color: "text-emerald-400 bg-emerald-500/10 border-emerald-500/30",
           dot: "bg-emerald-400 animate-pulse",
         };
@@ -86,6 +94,26 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
           <span className={cn("w-1.5 h-1.5 rounded-full", badge.dot)} />
           <span>{badge.label}</span>
         </div>
+
+        {/* Audio Activity Meter */}
+        {isCapturing && (
+          <div className="flex items-center gap-0.5 ml-1 h-3.5 px-1 bg-black/40 rounded border border-white/5">
+            <div
+              className="w-1 bg-sky-400 rounded-full transition-all duration-75"
+              style={{
+                height: `${Math.max(20, Math.min(100, audioPeak * 100))}%`,
+                opacity: audioPeak > 0.05 ? 1 : 0.4,
+              }}
+            />
+            <div
+              className="w-1 bg-emerald-400 rounded-full transition-all duration-75"
+              style={{
+                height: `${Math.max(15, Math.min(100, audioPeak * 80))}%`,
+                opacity: audioPeak > 0.1 ? 1 : 0.3,
+              }}
+            />
+          </div>
+        )}
       </div>
 
       {/* Control buttons */}
@@ -93,6 +121,23 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
         className="flex items-center gap-1 cursor-default"
         onMouseDown={(e) => e.stopPropagation()}
       >
+        {/* Audio Capture Toggle */}
+        <button
+          onClick={onToggleCapture}
+          title={isCapturing ? "Stop Audio Capture" : "Start Audio Capture"}
+          className={cn(
+            "p-1 rounded-md transition-colors relative",
+            isCapturing
+              ? "text-rose-400 bg-rose-500/20 hover:bg-rose-500/30"
+              : "text-slate-400 hover:text-white hover:bg-white/10"
+          )}
+        >
+          {isCapturing ? (
+            <Mic className="w-3.5 h-3.5 animate-pulse" />
+          ) : (
+            <MicOff className="w-3.5 h-3.5" />
+          )}
+        </button>
         {/* Screen capture protection indicator */}
         <button
           onClick={onToggleProtection}

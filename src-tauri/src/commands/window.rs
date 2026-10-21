@@ -1,4 +1,4 @@
-use tauri::{AppHandle, Manager, Runtime, WebviewWindow, Window};
+use tauri::{AppHandle, Runtime, Window};
 
 /// Toggle or set click-through mode for the HUD window.
 /// When `ignore` is true, cursor events pass directly through to underlying applications.

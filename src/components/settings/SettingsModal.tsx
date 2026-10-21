@@ -1,14 +1,21 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { X, Key, Sliders, Volume2, Save } from "lucide-react";
+import type { AudioDevice } from "../../hooks/useMeetingAssistant";
 
 interface SettingsModalProps {
   isOpen: boolean;
   onClose: () => void;
+  devices?: AudioDevice[];
+  selectedDevice?: string;
+  onSelectDevice?: (id: string) => void;
 }
 
 export const SettingsModal: React.FC<SettingsModalProps> = ({
   isOpen,
   onClose,
+  devices = [],
+  selectedDevice = "",
+  onSelectDevice,
 }) => {
   const [deepgramKey, setDeepgramKey] = useState("");
   const [llmKey, setLlmKey] = useState("");
@@ -16,19 +23,37 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [maxWords, setMaxWords] = useState(40);
   const [statusMsg, setStatusMsg] = useState("");
 
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const savedDg = localStorage.getItem("sidekick_dg_key");
+      const savedLlm = localStorage.getItem("sidekick_llm_key");
+      const savedProvider = localStorage.getItem("sidekick_llm_provider") as
+        | "anthropic"
+        | "openai"
+        | null;
+      if (savedDg) setDeepgramKey(savedDg);
+      if (savedLlm) setLlmKey(savedLlm);
+      if (savedProvider) setLlmProvider(savedProvider);
+    }
+  }, [isOpen]);
+
   if (!isOpen) return null;
 
   const handleSave = () => {
-    // Save configuration settings (persisted via Tauri store or local config in Phase 2)
+    if (typeof window !== "undefined") {
+      if (deepgramKey) localStorage.setItem("sidekick_dg_key", deepgramKey);
+      if (llmKey) localStorage.setItem("sidekick_llm_key", llmKey);
+      localStorage.setItem("sidekick_llm_provider", llmProvider);
+    }
     setStatusMsg("Settings saved!");
     setTimeout(() => {
       setStatusMsg("");
       onClose();
-    }, 800);
+    }, 600);
   };
 
   return (
-    <div className="absolute inset-0 z-50 bg-slate-950/80 backdrop-blur-md flex flex-col p-4 animate-fadeIn select-text">
+    <div className="absolute inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex flex-col p-4 animate-fadeIn select-text">
       {/* Modal Header */}
       <div className="flex items-center justify-between pb-3 border-b border-white/10">
         <div className="flex items-center gap-2">
@@ -47,6 +72,29 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
       {/* Modal Body */}
       <div className="flex-1 overflow-y-auto py-3 space-y-4 text-xs">
+        {/* Audio Device Selection */}
+        <div className="space-y-1.5">
+          <label className="flex items-center gap-1.5 font-medium text-slate-300">
+            <Volume2 className="w-3.5 h-3.5 text-sky-400" />
+            <span>Audio Loopback / Input Device</span>
+          </label>
+          <select
+            value={selectedDevice}
+            onChange={(e) => onSelectDevice?.(e.target.value)}
+            className="w-full px-2.5 py-1.5 rounded bg-slate-900 border border-white/10 text-slate-100 focus:outline-none focus:border-sky-500"
+          >
+            {devices.length === 0 ? (
+              <option value="">Default System Device</option>
+            ) : (
+              devices.map((dev) => (
+                <option key={dev.id} value={dev.id}>
+                  {dev.name} {dev.is_default ? "(Default)" : ""}
+                </option>
+              ))
+            )}
+          </select>
+        </div>
+
         {/* STT Configuration */}
         <div className="space-y-1.5">
           <label className="flex items-center gap-1.5 font-medium text-slate-300">
@@ -118,17 +166,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             onChange={(e) => setMaxWords(Number(e.target.value))}
             className="w-full accent-sky-500"
           />
-        </div>
-
-        {/* Audio Loopback */}
-        <div className="p-2.5 rounded bg-slate-900/60 border border-white/5 space-y-1">
-          <div className="flex items-center gap-1.5 text-slate-300 font-medium">
-            <Volume2 className="w-3.5 h-3.5 text-sky-400" />
-            <span>Audio Device</span>
-          </div>
-          <p className="text-[11px] text-slate-400">
-            ScreenCaptureKit audio loopback (macOS) / WASAPI (Windows) active.
-          </p>
         </div>
       </div>
 

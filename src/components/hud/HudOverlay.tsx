@@ -4,23 +4,7 @@ import { LiveTranscript } from "./LiveTranscript";
 import { TalkingPoints } from "./TalkingPoints";
 import { SettingsModal } from "../settings/SettingsModal";
 import { useTauriWindow } from "../../hooks/useTauriWindow";
-import type { MeetingStatus, TalkingPoint, TranscriptSnippet } from "../../types";
-
-const INITIAL_TALKING_POINTS: TalkingPoint[] = [
-  {
-    id: "sample-1",
-    topic: "System Architecture & Security",
-    question: "How does Sidekick capture audio without interrupting the call?",
-    bullets: [
-      "OS Loopback (ScreenCaptureKit/WASAPI) captures remote caller audio passively without virtual drivers.",
-      "Processes audio stream in-memory with zero local disk audio persistence.",
-      "Hardware-accelerated VAD triggers Deepgram Nova-2 streaming WebSocket.",
-    ],
-    wordCount: 31,
-    sources: ["Architecture_Spec.md", "Security_Overview.pdf"],
-    timestamp: Date.now(),
-  },
-];
+import { useMeetingAssistant } from "../../hooks/useMeetingAssistant";
 
 export const HudOverlay: React.FC = () => {
   const {
@@ -33,10 +17,19 @@ export const HudOverlay: React.FC = () => {
     close,
   } = useTauriWindow();
 
-  const [status] = useState<MeetingStatus>("ready");
-  const [points] = useState<TalkingPoint[]>(INITIAL_TALKING_POINTS);
-  const [currentSnippet] = useState<TranscriptSnippet | null>(null);
-  const [detectedQuestion] = useState<string | null>(null);
+  const {
+    isCapturing,
+    status,
+    audioLevel,
+    currentSnippet,
+    detectedQuestion,
+    talkingPoints,
+    toggleCapture,
+    devices,
+    selectedDevice,
+    setSelectedDevice,
+  } = useMeetingAssistant();
+
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 
   return (
@@ -44,8 +37,11 @@ export const HudOverlay: React.FC = () => {
       {/* Top Header & Drag Handle */}
       <HeaderBar
         status={status}
+        isCapturing={isCapturing}
+        audioPeak={audioLevel.peak}
         isClickThrough={isClickThrough}
         isProtected={isProtected}
+        onToggleCapture={toggleCapture}
         onToggleClickThrough={toggleClickThrough}
         onToggleProtection={toggleScreenCaptureProtection}
         onStartDrag={startDragging}
@@ -61,12 +57,15 @@ export const HudOverlay: React.FC = () => {
       />
 
       {/* Ultra-Dense Bullet Points Stream */}
-      <TalkingPoints points={points} />
+      <TalkingPoints points={talkingPoints} />
 
       {/* Settings Modal */}
       <SettingsModal
         isOpen={isSettingsOpen}
         onClose={() => setIsSettingsOpen(false)}
+        devices={devices}
+        selectedDevice={selectedDevice}
+        onSelectDevice={setSelectedDevice}
       />
     </div>
   );
