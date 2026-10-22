@@ -35,12 +35,14 @@ pub async fn start_audio_capture<R: Runtime>(
     // Stop any existing session
     stop_audio_capture_internal(&state);
 
+    let clean_device = device_id.clone().filter(|d| !d.trim().is_empty());
+
     // Channels for PCM audio (16kHz linear16) and VAD metrics
     let (pcm_tx, pcm_rx) = mpsc::channel::<Vec<u8>>(128);
     let (vad_tx, mut vad_rx) = mpsc::channel::<AudioLevelMetric>(64);
 
     // 1. Start Audio Capture
-    let capture_service = AudioCaptureService::start(device_id.clone(), pcm_tx, vad_tx)?;
+    let capture_service = AudioCaptureService::start(clean_device.clone(), pcm_tx, vad_tx)?;
 
     // 2. Spawn VAD forwarder to frontend HUD
     let app_for_vad = app_handle.clone();
@@ -79,6 +81,32 @@ pub async fn start_audio_capture<R: Runtime>(
         device_name: device_id,
         stt_connected,
     })
+}
+
+#[tauri::command]
+pub async fn pause_audio_capture(
+    state: State<'_, AudioSessionState>,
+) -> Result<bool, String> {
+    let cap_guard = state.capture.lock().map_err(|e| e.to_string())?;
+    if let Some(ref service) = *cap_guard {
+        service.pause();
+        Ok(true)
+    } else {
+        Ok(false)
+    }
+}
+
+#[tauri::command]
+pub async fn resume_audio_capture(
+    state: State<'_, AudioSessionState>,
+) -> Result<bool, String> {
+    let cap_guard = state.capture.lock().map_err(|e| e.to_string())?;
+    if let Some(ref service) = *cap_guard {
+        service.resume();
+        Ok(true)
+    } else {
+        Ok(false)
+    }
 }
 
 #[tauri::command]

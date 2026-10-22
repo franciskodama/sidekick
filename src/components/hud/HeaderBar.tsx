@@ -8,19 +8,27 @@ import {
   Minus,
   X,
   Settings,
-  Mic,
-  MicOff,
+  Play,
+  Pause,
+  Square,
+  Sparkles,
+  Bot,
 } from "lucide-react";
 import { cn } from "../../utils/cn";
-import type { MeetingStatus } from "../../types";
+import type { MeetingStatus, RecordingState, AiMode } from "../../types";
 
 interface HeaderBarProps {
   status: MeetingStatus;
-  isCapturing: boolean;
+  recordingState: RecordingState;
+  aiMode: AiMode;
   audioPeak?: number;
   isClickThrough: boolean;
   isProtected: boolean;
-  onToggleCapture: () => void;
+  onStartCapture: () => void;
+  onPauseCapture: () => void;
+  onResumeCapture: () => void;
+  onStopCapture: () => void;
+  onToggleAiMode: () => void;
   onToggleClickThrough: () => void;
   onToggleProtection: () => void;
   onStartDrag: () => void;
@@ -31,11 +39,16 @@ interface HeaderBarProps {
 
 export const HeaderBar: React.FC<HeaderBarProps> = ({
   status,
-  isCapturing,
+  recordingState,
+  aiMode,
   audioPeak = 0,
   isClickThrough,
   isProtected,
-  onToggleCapture,
+  onStartCapture,
+  onPauseCapture,
+  onResumeCapture,
+  onStopCapture,
+  onToggleAiMode,
   onToggleClickThrough,
   onToggleProtection,
   onStartDrag,
@@ -44,24 +57,26 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
   onOpenSettings,
 }) => {
   const getStatusBadge = () => {
-    switch (status) {
-      case "listening":
+    if (status === "processing") {
+      return {
+        label: "Gemini",
+        color: "text-amber-400 bg-amber-500/10 border-amber-500/30",
+        dot: "bg-amber-400 animate-ping",
+      };
+    }
+
+    switch (recordingState) {
+      case "recording":
         return {
-          label: isCapturing ? "Capturing" : "Listening",
+          label: "Listening",
           color: "text-emerald-400 bg-emerald-500/10 border-emerald-500/30",
           dot: "bg-emerald-400 animate-pulse",
         };
-      case "processing":
+      case "paused":
         return {
-          label: "Generating",
+          label: "Paused",
           color: "text-amber-400 bg-amber-500/10 border-amber-500/30",
-          dot: "bg-amber-400 animate-ping",
-        };
-      case "ready":
-        return {
-          label: "Ready",
-          color: "text-sky-400 bg-sky-500/10 border-sky-500/30",
-          dot: "bg-sky-400",
+          dot: "bg-amber-400",
         };
       default:
         return {
@@ -79,12 +94,14 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
       className="flex items-center justify-between px-3 py-2 border-b border-white/10 select-none cursor-move"
       onMouseDown={onStartDrag}
     >
-      {/* Drag handle & branding */}
+      {/* Drag handle, branding, status badge & AI Mode */}
       <div className="flex items-center gap-2">
         <GripHorizontal className="w-3.5 h-3.5 text-slate-400 hover:text-white transition-colors" />
         <span className="text-xs font-semibold tracking-wider uppercase text-sky-400 drop-shadow-[0_0_8px_rgba(56,189,248,0.4)]">
           Sidekick
         </span>
+
+        {/* State Badge */}
         <div
           className={cn(
             "flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-medium border",
@@ -95,9 +112,9 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
           <span>{badge.label}</span>
         </div>
 
-        {/* Audio Activity Meter */}
-        {isCapturing && (
-          <div className="flex items-center gap-0.5 ml-1 h-3.5 px-1 bg-black/40 rounded border border-white/5">
+        {/* Audio Activity Meter (Visible when active) */}
+        {recordingState === "recording" && (
+          <div className="flex items-center gap-0.5 h-3.5 px-1 bg-black/40 rounded border border-white/5">
             <div
               className="w-1 bg-sky-400 rounded-full transition-all duration-75"
               style={{
@@ -114,6 +131,38 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
             />
           </div>
         )}
+
+        {/* AI Mode Toggle (Auto vs On-Demand) */}
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onToggleAiMode();
+          }}
+          title={
+            aiMode === "on-demand"
+              ? "On-Demand Mode: Gemini only triggers when requested (Saves tokens). Click to switch to Auto."
+              : "Auto Mode: Answers all detected questions automatically. Click to switch to On-Demand."
+          }
+          className={cn(
+            "flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[9px] font-medium border transition-colors cursor-pointer",
+            aiMode === "on-demand"
+              ? "bg-purple-500/10 border-purple-500/30 text-purple-300 hover:bg-purple-500/20"
+              : "bg-sky-500/10 border-sky-500/30 text-sky-300 hover:bg-sky-500/20"
+          )}
+        >
+          {aiMode === "on-demand" ? (
+            <>
+              <Bot className="w-2.5 h-2.5 text-purple-400" />
+              <span>On-Demand</span>
+            </>
+          ) : (
+            <>
+              <Sparkles className="w-2.5 h-2.5 text-sky-400" />
+              <span>Auto AI</span>
+            </>
+          )}
+        </button>
       </div>
 
       {/* Control buttons */}
@@ -121,23 +170,75 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
         className="flex items-center gap-1 cursor-default"
         onMouseDown={(e) => e.stopPropagation()}
       >
-        {/* Audio Capture Toggle */}
-        <button
-          onClick={onToggleCapture}
-          title={isCapturing ? "Stop Audio Capture" : "Start Audio Capture"}
-          className={cn(
-            "p-1 rounded-md transition-colors relative",
-            isCapturing
-              ? "text-rose-400 bg-rose-500/20 hover:bg-rose-500/30"
-              : "text-slate-400 hover:text-white hover:bg-white/10"
-          )}
-        >
-          {isCapturing ? (
-            <Mic className="w-3.5 h-3.5 animate-pulse" />
-          ) : (
-            <MicOff className="w-3.5 h-3.5" />
-          )}
-        </button>
+        {/* Recording Controls: Start / Pause / Resume / Stop */}
+        {recordingState === "stopped" && (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onStartCapture();
+            }}
+            title="Start Audio Loopback (Begin Listening)"
+            className="p-1 rounded-md text-emerald-400 hover:bg-emerald-500/20 transition-colors cursor-pointer"
+          >
+            <Play className="w-3.5 h-3.5 fill-emerald-400/40" />
+          </button>
+        )}
+
+        {recordingState === "recording" && (
+          <div className="flex items-center gap-0.5">
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onPauseCapture();
+              }}
+              title="Pause Audio Loopback (0 tokens burned)"
+              className="p-1 rounded-md text-amber-400 hover:bg-amber-500/20 transition-colors cursor-pointer"
+            >
+              <Pause className="w-3.5 h-3.5 fill-amber-400/40" />
+            </button>
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onStopCapture();
+              }}
+              title="Stop Audio Capture"
+              className="p-1 rounded-md text-rose-400 hover:bg-rose-500/20 transition-colors cursor-pointer"
+            >
+              <Square className="w-3 h-3 fill-rose-400/40" />
+            </button>
+          </div>
+        )}
+
+        {recordingState === "paused" && (
+          <div className="flex items-center gap-0.5">
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onResumeCapture();
+              }}
+              title="Resume Audio Loopback (Instant 0ms restart)"
+              className="p-1 rounded-md text-emerald-400 hover:bg-emerald-500/20 transition-colors cursor-pointer"
+            >
+              <Play className="w-3.5 h-3.5 fill-emerald-400/40 animate-pulse" />
+            </button>
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onStopCapture();
+              }}
+              title="Stop Audio Capture"
+              className="p-1 rounded-md text-rose-400 hover:bg-rose-500/20 transition-colors cursor-pointer"
+            >
+              <Square className="w-3 h-3 fill-rose-400/40" />
+            </button>
+          </div>
+        )}
+
         {/* Screen capture protection indicator */}
         <button
           onClick={onToggleProtection}

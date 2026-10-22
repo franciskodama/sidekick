@@ -2,7 +2,7 @@
 //!
 //! Captures system output loopback or microphone input via CPAL on a dedicated thread,
 //! normalizes audio to 16,000 Hz 16-bit Mono Linear PCM,
-//! and provides real-time RMS Voice Activity Detection (VAD).
+//! and provides real-time RMS Voice Activity Detection (VAD) with Start/Pause/Resume support.
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Device, SampleFormat, StreamConfig};
@@ -30,6 +30,7 @@ pub struct AudioLevelMetric {
 pub struct AudioCaptureService {
     shutdown_tx: std_mpsc::Sender<()>,
     is_running: Arc<AtomicBool>,
+    is_paused: Arc<AtomicBool>,
 }
 
 impl AudioCaptureService {
@@ -85,6 +86,9 @@ impl AudioCaptureService {
 
         let is_running = Arc::new(AtomicBool::new(true));
         let is_running_clone = Arc::clone(&is_running);
+
+        let is_paused = Arc::new(AtomicBool::new(false));
+        let is_paused_clone = Arc::clone(&is_paused);
 
         std::thread::Builder::new()
             .name("sidekick-audio-capture".into())
@@ -147,6 +151,7 @@ impl AudioCaptureService {
                         pcm_sender,
                         vad_sender,
                         Arc::clone(&is_running_clone),
+                        Arc::clone(&is_paused_clone),
                     ),
                     SampleFormat::I16 => Self::build_stream_i16(
                         &device,
@@ -156,6 +161,7 @@ impl AudioCaptureService {
                         pcm_sender,
                         vad_sender,
                         Arc::clone(&is_running_clone),
+                        Arc::clone(&is_paused_clone),
                     ),
                     _ => Err(format!("Unsupported audio sample format: {sample_format:?}")),
                 };
@@ -190,6 +196,7 @@ impl AudioCaptureService {
         Ok(AudioCaptureService {
             shutdown_tx,
             is_running,
+            is_paused,
         })
     }
 
@@ -201,6 +208,7 @@ impl AudioCaptureService {
         pcm_sender: mpsc::Sender<Vec<u8>>,
         vad_sender: mpsc::Sender<AudioLevelMetric>,
         is_running: Arc<AtomicBool>,
+        is_paused: Arc<AtomicBool>,
     ) -> Result<cpal::Stream, String> {
         let err_fn = |err| eprintln!("Audio stream error: {err}");
 
@@ -209,6 +217,11 @@ impl AudioCaptureService {
                 config,
                 move |data: &[f32], _: &cpal::InputCallbackInfo| {
                     if !is_running.load(Ordering::Relaxed) {
+                        return;
+                    }
+
+                    // Zero token burn when paused
+                    if is_paused.load(Ordering::Relaxed) {
                         return;
                     }
 
@@ -269,6 +282,7 @@ impl AudioCaptureService {
         pcm_sender: mpsc::Sender<Vec<u8>>,
         vad_sender: mpsc::Sender<AudioLevelMetric>,
         is_running: Arc<AtomicBool>,
+        is_paused: Arc<AtomicBool>,
     ) -> Result<cpal::Stream, String> {
         let err_fn = |err| eprintln!("Audio stream error: {err}");
 
@@ -277,6 +291,10 @@ impl AudioCaptureService {
                 config,
                 move |data: &[i16], _: &cpal::InputCallbackInfo| {
                     if !is_running.load(Ordering::Relaxed) {
+                        return;
+                    }
+
+                    if is_paused.load(Ordering::Relaxed) {
                         return;
                     }
 
@@ -329,6 +347,18 @@ impl AudioCaptureService {
             .map_err(|e| format!("Failed to build I16 audio stream: {e}"))?;
 
         Ok(stream)
+    }
+
+    pub fn pause(&self) {
+        self.is_paused.store(true, Ordering::Relaxed);
+    }
+
+    pub fn resume(&self) {
+        self.is_paused.store(false, Ordering::Relaxed);
+    }
+
+    pub fn is_paused(&self) -> bool {
+        self.is_paused.load(Ordering::Relaxed)
     }
 
     pub fn stop(&self) {

@@ -16,7 +16,9 @@ export interface TranscriptSnippet {
   timestamp: number;
 }
 
-export type MeetingStatus = "idle" | "listening" | "processing" | "ready";
+export type MeetingStatus = "idle" | "listening" | "processing" | "ready" | "paused";
+export type RecordingState = "stopped" | "recording" | "paused";
+export type AiMode = "auto" | "on-demand";
 
 export interface AudioLevel {
   peak: number; // 0.0 to 1.0

@@ -42,3 +42,8 @@ src-tauri/gen/schemas/
 *.sln
 *.sw?
 *.tsbuildinfo
+
+# Local Knowledge Base documents (keep local only)
+knowledge/*
+!knowledge/README.md
+!knowledge/.gitkeep
