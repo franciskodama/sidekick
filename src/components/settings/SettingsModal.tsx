@@ -44,8 +44,21 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           | "openai"
           | null;
 
-        if (savedDg) setDeepgramKey(savedDg);
-        if (savedGemini) setGeminiKey(savedGemini);
+        const envDg = import.meta.env.VITE_DEEPGRAM_API_KEY || "";
+        const envGemini = import.meta.env.VITE_GEMINI_API_KEY || "";
+
+        if (savedDg) {
+          setDeepgramKey(savedDg);
+        } else if (envDg) {
+          setDeepgramKey(envDg);
+        }
+
+        if (savedGemini) {
+          setGeminiKey(savedGemini);
+        } else if (envGemini) {
+          setGeminiKey(envGemini);
+        }
+
         if (savedLlm) setLlmKey(savedLlm);
         if (savedProvider) setLlmProvider(savedProvider);
       }

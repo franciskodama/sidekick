@@ -1,4 +1,4 @@
-import { defineConfig } from "vite";
+import { defineConfig, loadEnv } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 // @ts-expect-error type error without @types/node package
@@ -49,8 +49,13 @@ const knowledgePlugin = () => ({
 });
 
 // https://vite.dev/config/
-export default defineConfig(() => {
+export default defineConfig(({ mode }) => {
+  const env = loadEnv(mode, process.cwd(), "");
   return {
+    define: {
+      "import.meta.env.VITE_GEMINI_API_KEY": JSON.stringify(env.GEMINI_API_KEY || ""),
+      "import.meta.env.VITE_DEEPGRAM_API_KEY": JSON.stringify(env.DEEPGRAM_API_KEY || ""),
+    },
     plugins: [react(), tailwindcss(), knowledgePlugin()],
 
     // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`

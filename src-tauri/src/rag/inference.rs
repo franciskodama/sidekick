@@ -148,7 +148,7 @@ impl InferenceService {
     ) -> Result<String, String> {
         let client = reqwest::Client::new();
         let url = format!(
-            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse&key={}",
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:streamGenerateContent?alt=sse&key={}",
             api_key.trim()
         );
 

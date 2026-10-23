@@ -24,6 +24,40 @@ export interface DocumentChunkInfo {
   content: string;
 }
 
+function isQuestionLike(text: string): boolean {
+  const trimmed = text.trim();
+  if (trimmed.endsWith("?")) {
+    return true;
+  }
+  const lower = trimmed.toLowerCase();
+  const interrogativePrefixes = [
+    "what",
+    "how",
+    "why",
+    "who",
+    "when",
+    "where",
+    "which",
+    "whose",
+    "can you",
+    "could you",
+    "would you",
+    "can we",
+    "could we",
+    "is there",
+    "are there",
+    "do you",
+    "did you",
+    "does this",
+    "do we",
+    "have you",
+    "tell me",
+    "explain",
+    "describe",
+  ];
+  return interrogativePrefixes.some((prefix) => lower.startsWith(prefix));
+}
+
 export function useMeetingAssistant() {
   const [recordingState, setRecordingState] = useState<RecordingState>("stopped");
   const [status, setStatus] = useState<MeetingStatus>("ready");
@@ -49,6 +83,8 @@ export function useMeetingAssistant() {
   const webAudioStreamRef = useRef<MediaStream | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const animFrameRef = useRef<number | null>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const speechRecognitionRef = useRef<any>(null);
 
   const isTauri =
     typeof window !== "undefined" &&
@@ -142,7 +178,7 @@ export function useMeetingAssistant() {
       const provider = localStorage.getItem("sidekick_llm_provider") || "gemini";
       const apiKey =
         provider === "gemini"
-          ? localStorage.getItem("sidekick_gemini_key")
+          ? localStorage.getItem("sidekick_gemini_key") || import.meta.env.VITE_GEMINI_API_KEY
           : localStorage.getItem("sidekick_llm_key");
 
       if (isTauri) {
@@ -174,16 +210,26 @@ export function useMeetingAssistant() {
         // Direct browser client-side streaming or simulated answer
         if (apiKey && provider === "gemini") {
           try {
-            const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse&key=${apiKey.trim()}`;
+            const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:streamGenerateContent?alt=sse&key=${apiKey.trim()}`;
+
+            const relevantContext = indexedDocs
+              .filter((d) => !d.content.startsWith("Indexed document ("))
+              .map((d) => `[Source: ${d.title}]\n${d.content.slice(0, 2000)}`)
+              .join("\n\n");
+
+            const promptText = relevantContext
+              ? `Knowledge Context:\n${relevantContext}\n\nQuestion:\n${questionText}`
+              : `Question: ${questionText}`;
+
             const resp = await fetch(url, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
-                contents: [{ role: "user", parts: [{ text: `Question: ${questionText}` }] }],
+                contents: [{ role: "user", parts: [{ text: promptText }] }],
                 systemInstruction: {
                   parts: [
                     {
-                      text: "You are Sidekick, an ultra-dense HUD meeting assistant. Answer in exactly 2-3 bullets, under 30 words total. Zero conversational filler.",
+                      text: "You are Sidekick, an ultra-dense HUD meeting assistant. Answer using the provided knowledge context in exactly 2-3 bullets, under 35 words total. Zero conversational filler.",
                     },
                   ],
                 },
@@ -212,11 +258,11 @@ export function useMeetingAssistant() {
                           .filter(Boolean);
                         setActiveStreamingPoint({
                           id: "streaming",
-                          topic: "Gemini 2.5 Flash",
+                          topic: "Gemini 3.5 Flash",
                           question: questionText,
                           bullets,
                           wordCount: fullText.split(/\s+/).filter(Boolean).length,
-                          sources: ["Gemini Cloud"],
+                          sources: relevantContext ? ["Local Knowledge", "Gemini 3.5 Flash"] : ["Gemini Cloud"],
                           timestamp: Date.now(),
                         });
                       }
@@ -233,11 +279,11 @@ export function useMeetingAssistant() {
               setTalkingPoints((prev) => [
                 {
                   id: `pt-${Date.now()}`,
-                  topic: "Gemini 2.5 Flash",
+                  topic: "Gemini 3.5 Flash",
                   question: questionText,
                   bullets: finalBullets,
                   wordCount: fullText.split(/\s+/).filter(Boolean).length,
-                  sources: ["Gemini Cloud"],
+                  sources: relevantContext ? ["Local Knowledge", "Gemini 3.5 Flash"] : ["Gemini Cloud"],
                   timestamp: Date.now(),
                 },
                 ...prev,
@@ -270,7 +316,7 @@ export function useMeetingAssistant() {
         }, 350);
       }
     },
-    [isTauri]
+    [isTauri, indexedDocs]
   );
 
   // 3. Set up event listeners (Tauri mode)
@@ -403,10 +449,14 @@ export function useMeetingAssistant() {
   }, [isTauri, recordingState, executeQuery]);
 
   // 4. Audio Capture Controls: Start, Pause, Resume, Stop
+  const recordingStateRef = useRef<RecordingState>("stopped");
+  recordingStateRef.current = recordingState;
+
   const startCapture = useCallback(async () => {
     if (isTauri) {
       try {
-        const savedDg = localStorage.getItem("sidekick_dg_key");
+        const savedDg =
+          localStorage.getItem("sidekick_dg_key") || import.meta.env.VITE_DEEPGRAM_API_KEY;
         await invoke("start_audio_capture", {
           deviceId: selectedDevice || null,
           apiKey: savedDg ? savedDg.trim() : null,
@@ -417,7 +467,7 @@ export function useMeetingAssistant() {
         console.error("Failed to start native audio capture:", err);
       }
     } else {
-      // Browser Web Audio fallback
+      // Browser Web Audio + Web Speech API fallback
       try {
         const getUserMediaWithTimeout = async () => {
           if (!navigator.mediaDevices?.getUserMedia) {
@@ -425,7 +475,7 @@ export function useMeetingAssistant() {
           }
           const getStream = navigator.mediaDevices.getUserMedia({ audio: true });
           const timeout = new Promise<never>((_, reject) =>
-            setTimeout(() => reject(new Error("Mic prompt timed out")), 600)
+            setTimeout(() => reject(new Error("Mic prompt timed out")), 1500)
           );
           return Promise.race([getStream, timeout]);
         };
@@ -456,12 +506,71 @@ export function useMeetingAssistant() {
           const peak = avg / 128;
           setAudioLevel({
             peak: Math.min(1, peak * 1.5),
-            isSpeaking: peak > 0.1,
+            isSpeaking: peak > 0.08,
           });
           animFrameRef.current = requestAnimationFrame(checkAudio);
         };
 
         checkAudio();
+
+        // Browser Web Speech API for real-time STT in Chrome / Safari
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const SpeechRec = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+        if (SpeechRec) {
+          try {
+            const recognition = new SpeechRec();
+            recognition.continuous = true;
+            recognition.interimResults = true;
+            recognition.lang = "en-US";
+
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            recognition.onresult = (event: any) => {
+              for (let i = event.resultIndex; i < event.results.length; i++) {
+                const res = event.results[i];
+                const text = res[0].transcript.trim();
+                const isFinal = res.isFinal;
+
+                setCurrentSnippet({
+                  id: String(Date.now()),
+                  text,
+                  isFinal,
+                  timestamp: Date.now(),
+                });
+
+                if (isFinal && isQuestionLike(text)) {
+                  setDetectedQuestion(text);
+                  const currentMode =
+                    (localStorage.getItem("sidekick_ai_mode") as AiMode) || "on-demand";
+                  if (currentMode === "auto") {
+                    executeQuery(text);
+                  } else {
+                    setStatus("ready");
+                  }
+                }
+              }
+            };
+
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            recognition.onerror = (e: any) => {
+              console.warn("Browser SpeechRecognition error:", e);
+            };
+
+            recognition.onend = () => {
+              // Auto-restart if we are still in recording state
+              if (recordingStateRef.current === "recording" && speechRecognitionRef.current) {
+                try {
+                  recognition.start();
+                } catch {}
+              }
+            };
+
+            recognition.start();
+            speechRecognitionRef.current = recognition;
+          } catch (recErr) {
+            console.warn("Could not start Web SpeechRecognition:", recErr);
+          }
+        }
+
         setRecordingState("recording");
         setStatus("listening");
       } catch (err) {
@@ -481,7 +590,7 @@ export function useMeetingAssistant() {
         animFrameRef.current = intervalId as unknown as number;
       }
     }
-  }, [isTauri, selectedDevice]);
+  }, [isTauri, selectedDevice, executeQuery]);
 
   const pauseCapture = useCallback(async () => {
     if (isTauri) {
@@ -497,6 +606,11 @@ export function useMeetingAssistant() {
       if (animFrameRef.current) {
         clearInterval(animFrameRef.current);
         cancelAnimationFrame(animFrameRef.current);
+      }
+      if (speechRecognitionRef.current) {
+        try {
+          speechRecognitionRef.current.stop();
+        } catch {}
       }
     }
     setRecordingState("paused");
@@ -523,6 +637,11 @@ export function useMeetingAssistant() {
         }, 120);
         animFrameRef.current = intervalId as unknown as number;
       }
+      if (speechRecognitionRef.current) {
+        try {
+          speechRecognitionRef.current.start();
+        } catch {}
+      }
     }
     setRecordingState("recording");
     setStatus("listening");
@@ -545,6 +664,12 @@ export function useMeetingAssistant() {
       }
       if (audioContextRef.current) {
         audioContextRef.current.close().catch(() => {});
+      }
+      if (speechRecognitionRef.current) {
+        try {
+          speechRecognitionRef.current.stop();
+        } catch {}
+        speechRecognitionRef.current = null;
       }
     }
 
