@@ -147,10 +147,8 @@ impl InferenceService {
         question: &str,
     ) -> Result<String, String> {
         let client = reqwest::Client::new();
-        let url = format!(
-            "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:streamGenerateContent?alt=sse&key={}",
-            api_key.trim()
-        );
+        let models = ["gemini-3.6-flash", "gemini-3.1-flash-lite"];
+        let mut last_err = String::new();
 
         let body = serde_json::json!({
             "contents": [
@@ -168,46 +166,68 @@ impl InferenceService {
             }
         });
 
-        let resp = client
-            .post(&url)
-            .header("Content-Type", "application/json")
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| format!("Failed to connect to Gemini API: {e}"))?;
+        for model in models {
+            let url = format!(
+                "https://generativelanguage.googleapis.com/v1beta/models/{}:streamGenerateContent?alt=sse&key={}",
+                model,
+                api_key.trim()
+            );
 
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let err_body = resp.text().await.unwrap_or_default();
-            return Err(format!("Gemini API error ({status}): {err_body}"));
-        }
+            let resp = client
+                .post(&url)
+                .header("Content-Type", "application/json")
+                .json(&body)
+                .send()
+                .await;
 
-        let mut full_text = String::new();
-        let mut stream = resp.bytes_stream();
+            let resp = match resp {
+                Ok(r) => r,
+                Err(e) => {
+                    last_err = format!("Failed to connect to Gemini API ({model}): {e}");
+                    continue;
+                }
+            };
 
-        while let Some(item) = stream.next().await {
-            let chunk = item.map_err(|e| format!("Error in Gemini stream: {e}"))?;
-            let text_chunk = String::from_utf8_lossy(&chunk);
+            if !resp.status().is_success() {
+                let status = resp.status();
+                let err_body = resp.text().await.unwrap_or_default();
+                last_err = format!("Gemini API error on {model} ({status}): {err_body}");
+                continue;
+            }
 
-            for line in text_chunk.lines() {
-                if let Some(json_str) = line.strip_prefix("data: ") {
-                    if let Ok(val) = serde_json::from_str::<serde_json::Value>(json_str) {
-                        if let Some(candidates) = val.get("candidates").and_then(|c| c.as_array()) {
-                            if let Some(first_cand) = candidates.first() {
-                                if let Some(parts) = first_cand.pointer("/content/parts").and_then(|p| p.as_array()) {
-                                    for part in parts {
-                                        if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
-                                            full_text.push_str(text);
+            let mut full_text = String::new();
+            let mut stream = resp.bytes_stream();
 
-                                            let _ = app.emit(
-                                                "sidekick://talking-point-stream",
-                                                StreamChunkPayload {
-                                                    id: point_id.to_string(),
-                                                    delta: text.to_string(),
-                                                    full_text: full_text.clone(),
-                                                    question: question.to_string(),
-                                                },
-                                            );
+            while let Some(item) = stream.next().await {
+                let chunk = match item {
+                    Ok(c) => c,
+                    Err(e) => {
+                        eprintln!("Error reading chunk: {e}");
+                        break;
+                    }
+                };
+                let text_chunk = String::from_utf8_lossy(&chunk);
+
+                for line in text_chunk.lines() {
+                    if let Some(json_str) = line.strip_prefix("data: ") {
+                        if let Ok(val) = serde_json::from_str::<serde_json::Value>(json_str) {
+                            if let Some(candidates) = val.get("candidates").and_then(|c| c.as_array()) {
+                                if let Some(first_cand) = candidates.first() {
+                                    if let Some(parts) = first_cand.pointer("/content/parts").and_then(|p| p.as_array()) {
+                                        for part in parts {
+                                            if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
+                                                full_text.push_str(text);
+
+                                                let _ = app.emit(
+                                                    "sidekick://talking-point-stream",
+                                                    StreamChunkPayload {
+                                                        id: point_id.to_string(),
+                                                        delta: text.to_string(),
+                                                        full_text: full_text.clone(),
+                                                        question: question.to_string(),
+                                                    },
+                                                );
+                                            }
                                         }
                                     }
                                 }
@@ -216,9 +236,17 @@ impl InferenceService {
                     }
                 }
             }
+
+            if !full_text.trim().is_empty() {
+                return Ok(full_text);
+            }
         }
 
-        Ok(full_text)
+        Err(if last_err.is_empty() {
+            "All Gemini models failed to generate content".to_string()
+        } else {
+            last_err
+        })
     }
 
     /// Anthropic Claude 3.5 Haiku Streaming

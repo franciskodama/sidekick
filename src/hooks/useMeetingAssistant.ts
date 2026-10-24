@@ -207,113 +207,129 @@ export function useMeetingAssistant() {
           setStatus("ready");
         }
       } else {
-        // Direct browser client-side streaming or simulated answer
+        // Direct browser client-side streaming
+        const candidateModels = ["gemini-3.6-flash", "gemini-3.1-flash-lite"];
+        let success = false;
+
         if (apiKey && provider === "gemini") {
-          try {
-            const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:streamGenerateContent?alt=sse&key=${apiKey.trim()}`;
+          const relevantDocs = indexedDocs.filter((d) => !d.content.startsWith("Indexed document ("));
+          const relevantContext = relevantDocs
+            .map((d) => `[Source: ${d.title}]\n${d.content.slice(0, 2000)}`)
+            .join("\n\n");
 
-            const relevantContext = indexedDocs
-              .filter((d) => !d.content.startsWith("Indexed document ("))
-              .map((d) => `[Source: ${d.title}]\n${d.content.slice(0, 2000)}`)
-              .join("\n\n");
+          const promptText = relevantContext
+            ? `Knowledge Context:\n${relevantContext}\n\nQuestion:\n${questionText}`
+            : `Question: ${questionText}`;
 
-            const promptText = relevantContext
-              ? `Knowledge Context:\n${relevantContext}\n\nQuestion:\n${questionText}`
-              : `Question: ${questionText}`;
+          for (const model of candidateModels) {
+            try {
+              const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse&key=${apiKey.trim()}`;
 
-            const resp = await fetch(url, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                contents: [{ role: "user", parts: [{ text: promptText }] }],
-                systemInstruction: {
-                  parts: [
-                    {
-                      text: "You are Sidekick, an ultra-dense HUD meeting assistant. Answer using the provided knowledge context in exactly 2-3 bullets, under 35 words total. Zero conversational filler.",
-                    },
-                  ],
-                },
-              }),
-            });
+              const resp = await fetch(url, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  contents: [{ role: "user", parts: [{ text: promptText }] }],
+                  systemInstruction: {
+                    parts: [
+                      {
+                        text: "You are Sidekick, an ultra-dense HUD meeting assistant. Answer using the provided knowledge context in exactly 2-3 bullets, under 35 words total. Zero conversational filler.",
+                      },
+                    ],
+                  },
+                }),
+              });
 
-            if (resp.ok && resp.body) {
-              const reader = resp.body.getReader();
-              const decoder = new TextDecoder();
-              let fullText = "";
-
-              while (true) {
-                const { done, value } = await reader.read();
-                if (done) break;
-                const chunk = decoder.decode(value);
-                for (const line of chunk.split("\n")) {
-                  if (line.startsWith("data: ")) {
-                    try {
-                      const json = JSON.parse(line.slice(6));
-                      const text = json.candidates?.[0]?.content?.parts?.[0]?.text;
-                      if (text) {
-                        fullText += text;
-                        const bullets = fullText
-                          .split("\n")
-                          .map((l) => l.replace(/^[•\-*]\s*/, "").trim())
-                          .filter(Boolean);
-                        setActiveStreamingPoint({
-                          id: "streaming",
-                          topic: "Gemini 3.5 Flash",
-                          question: questionText,
-                          bullets,
-                          wordCount: fullText.split(/\s+/).filter(Boolean).length,
-                          sources: relevantContext ? ["Local Knowledge", "Gemini 3.5 Flash"] : ["Gemini Cloud"],
-                          timestamp: Date.now(),
-                        });
-                      }
-                    } catch {}
-                  }
-                }
+              if (!resp.ok) {
+                const errText = await resp.text();
+                console.warn(`Gemini model ${model} failed (${resp.status}):`, errText);
+                continue;
               }
 
-              setActiveStreamingPoint(null);
-              const finalBullets = fullText
-                .split("\n")
-                .map((l) => l.replace(/^[•\-*]\s*/, "").trim())
-                .filter(Boolean);
-              setTalkingPoints((prev) => [
-                {
-                  id: `pt-${Date.now()}`,
-                  topic: "Gemini 3.5 Flash",
-                  question: questionText,
-                  bullets: finalBullets,
-                  wordCount: fullText.split(/\s+/).filter(Boolean).length,
-                  sources: relevantContext ? ["Local Knowledge", "Gemini 3.5 Flash"] : ["Gemini Cloud"],
-                  timestamp: Date.now(),
-                },
-                ...prev,
-              ]);
-              setStatus("ready");
-              return;
+              if (resp.body) {
+                const reader = resp.body.getReader();
+                const decoder = new TextDecoder();
+                let fullText = "";
+
+                while (true) {
+                  const { done, value } = await reader.read();
+                  if (done) break;
+                  const chunk = decoder.decode(value);
+                  for (const line of chunk.split("\n")) {
+                    if (line.startsWith("data: ")) {
+                      try {
+                        const json = JSON.parse(line.slice(6));
+                        const text = json.candidates?.[0]?.content?.parts?.[0]?.text;
+                        if (text) {
+                          fullText += text;
+                          const bullets = fullText
+                            .split("\n")
+                            .map((l) => l.replace(/^[•\-*]\s*/, "").trim())
+                            .filter(Boolean);
+                          setActiveStreamingPoint({
+                            id: "streaming",
+                            topic: model === "gemini-3.6-flash" ? "Gemini 3.6 Flash" : "Gemini 3.1 Flash-Lite",
+                            question: questionText,
+                            bullets,
+                            wordCount: fullText.split(/\s+/).filter(Boolean).length,
+                            sources: relevantDocs.length > 0 ? relevantDocs.map((d) => d.source_path) : ["Gemini Cloud"],
+                            timestamp: Date.now(),
+                          });
+                        }
+                      } catch {}
+                    }
+                  }
+                }
+
+                setActiveStreamingPoint(null);
+                const finalBullets = fullText
+                  .split("\n")
+                  .map((l) => l.replace(/^[•\-*]\s*/, "").trim())
+                  .filter(Boolean);
+
+                if (finalBullets.length > 0) {
+                  setTalkingPoints((prev) => [
+                    {
+                      id: `pt-${Date.now()}`,
+                      topic: model === "gemini-3.6-flash" ? "Gemini 3.6 Flash" : "Gemini 3.1 Flash-Lite",
+                      question: questionText,
+                      bullets: finalBullets,
+                      wordCount: fullText.split(/\s+/).filter(Boolean).length,
+                      sources: relevantDocs.length > 0 ? relevantDocs.map((d) => d.source_path) : ["Gemini Cloud"],
+                      timestamp: Date.now(),
+                    },
+                    ...prev,
+                  ]);
+                  setStatus("ready");
+                  success = true;
+                  return;
+                }
+              }
+            } catch (e) {
+              console.error(`Browser fetch error on ${model}:`, e);
             }
-          } catch (e) {
-            console.error("Browser direct fetch error:", e);
           }
         }
 
-        // Instant simulated response for browser preview
-        setTimeout(() => {
-          const answerPoint: TalkingPoint = {
+        if (!success) {
+          setActiveStreamingPoint(null);
+          const errorPoint: TalkingPoint = {
             id: `pt-${Date.now()}`,
-            topic: "Knowledge Base Match",
+            topic: "Inference Notice",
             question: questionText,
             bullets: [
-              "Captures remote audio loopback directly without extra virtual soundcards.",
-              "Excluded from screen shares via macOS NSWindowSharingNone.",
-              "Provides sub-300ms talking points powered by Gemini Flash.",
+              apiKey
+                ? "Gemini API temporarily experiencing high traffic spikes (503). Click Answer to retry in a moment."
+                : "No GEMINI_API_KEY detected. Please check your .env or Settings.",
+              "Knowledge base files are ready in ./knowledge.",
             ],
-            wordCount: 26,
-            sources: ["Sidekick_Product_Overview.md", "Security_and_Privacy.md"],
+            wordCount: 20,
+            sources: ["System"],
             timestamp: Date.now(),
           };
-          setTalkingPoints((prev) => [answerPoint, ...prev]);
+          setTalkingPoints((prev) => [errorPoint, ...prev]);
           setStatus("ready");
-        }, 350);
+        }
       }
     },
     [isTauri, indexedDocs]
@@ -687,7 +703,9 @@ export function useMeetingAssistant() {
   // Trigger Gemini answer for current question
   const triggerAnswer = useCallback(() => {
     if (detectedQuestion) {
-      executeQuery(detectedQuestion);
+      const q = detectedQuestion;
+      setDetectedQuestion(null);
+      executeQuery(q);
     }
   }, [detectedQuestion, executeQuery]);
 
