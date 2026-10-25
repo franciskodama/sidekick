@@ -29,7 +29,41 @@ function isQuestionLike(text: string): boolean {
   if (trimmed.endsWith("?")) {
     return true;
   }
-  const lower = trimmed.toLowerCase();
+
+  // Strip leading punctuation and common conversational filler prefixes
+  const clean = trimmed
+    .toLowerCase()
+    .replace(/^[^a-z0-9]+/i, "")
+    .replace(/^(so|okay|ok|well|now|and|then|um|uh|great|cool|right)[,\s]+/i, "")
+    .trim();
+
+  if (clean.endsWith("?")) {
+    return true;
+  }
+
+  // Typical interview and meeting prompts (commands that expect talking points)
+  const interviewPromptPatterns = [
+    /\btell (me|us)\b/i,
+    /\bwalk (me|us) through\b/i,
+    /\btalk (about|to me about|to us about)\b/i,
+    /\bdescribe (a time|your|how|what)\b/i,
+    /\bexplain (how|why|what|your)\b/i,
+    /\bgive (me |us )?(an? )?example\b/i,
+    /\bshare (an? )?(example|time|experience)\b/i,
+    /\belaborate on\b/i,
+    /\bspeak to\b/i,
+    /\bwhat would you\b/i,
+    /\bhow would you\b/i,
+    /\bwhat is your\b/i,
+    /\bwhat are your\b/i,
+    /\bwhy did you\b/i,
+    /\bwhy do you\b/i,
+  ];
+
+  if (interviewPromptPatterns.some((pattern) => pattern.test(clean))) {
+    return true;
+  }
+
   const interrogativePrefixes = [
     "what",
     "how",
@@ -42,8 +76,10 @@ function isQuestionLike(text: string): boolean {
     "can you",
     "could you",
     "would you",
+    "will you",
     "can we",
     "could we",
+    "should we",
     "is there",
     "are there",
     "do you",
@@ -52,10 +88,14 @@ function isQuestionLike(text: string): boolean {
     "do we",
     "have you",
     "tell me",
+    "tell us",
+    "walk me",
+    "walk us",
     "explain",
     "describe",
   ];
-  return interrogativePrefixes.some((prefix) => lower.startsWith(prefix));
+
+  return interrogativePrefixes.some((prefix) => clean.startsWith(prefix));
 }
 
 export function useMeetingAssistant() {

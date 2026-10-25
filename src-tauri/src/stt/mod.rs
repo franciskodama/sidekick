@@ -165,7 +165,7 @@ impl DeepgramStreamingClient {
     }
 }
 
-/// Detects if a transcript string represents an interrogative question.
+/// Detects if a transcript string represents an interrogative question or interview prompt.
 fn is_question_like(text: &str) -> bool {
     let trimmed = text.trim();
     if trimmed.ends_with('?') {
@@ -173,11 +173,51 @@ fn is_question_like(text: &str) -> bool {
     }
 
     let lower = trimmed.to_lowercase();
-    let interrogative_prefixes = [
-        "what", "how", "why", "who", "when", "where", "which", "whose",
-        "can you", "could you", "would you", "can we", "could we", "is there",
-        "are there", "do you", "did you", "does this", "do we", "have you",
+    let clean = lower.trim_start_matches(|c: char| !c.is_alphanumeric());
+
+    // Strip common conversational filler prefixes like "so", "okay", "well"
+    let fillers = ["so ", "okay ", "ok ", "well ", "now ", "and ", "then ", "um ", "uh ", "right "];
+    let mut normalized = clean;
+    for filler in &fillers {
+        if normalized.starts_with(filler) {
+            normalized = normalized.trim_start_matches(filler).trim_start();
+        }
+    }
+
+    if normalized.ends_with('?') {
+        return true;
+    }
+
+    // Interview and meeting prompt phrases (can appear anywhere in normalized)
+    let interview_phrases = [
+        "tell me",
+        "tell us",
+        "walk me through",
+        "walk us through",
+        "talk about",
+        "talk to me about",
+        "describe a time",
+        "describe how",
+        "describe your",
+        "explain how",
+        "explain why",
+        "give me an example",
+        "give us an example",
+        "share an example",
+        "share a time",
+        "elaborate on",
+        "speak to",
     ];
 
-    interrogative_prefixes.iter().any(|prefix| lower.starts_with(prefix))
+    if interview_phrases.iter().any(|phrase| normalized.contains(phrase)) {
+        return true;
+    }
+
+    let interrogative_prefixes = [
+        "what", "how", "why", "who", "when", "where", "which", "whose",
+        "can you", "could you", "would you", "will you", "can we", "could we", "should we",
+        "is there", "are there", "do you", "did you", "does this", "do we", "have you",
+    ];
+
+    interrogative_prefixes.iter().any(|prefix| normalized.starts_with(prefix))
 }
