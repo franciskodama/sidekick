@@ -24,6 +24,148 @@ export interface DocumentChunkInfo {
   content: string;
 }
 
+function isQuestionLike(text: string): boolean {
+  const trimmed = text.trim();
+  if (trimmed.endsWith("?")) {
+    return true;
+  }
+
+  // Strip leading punctuation and common conversational filler prefixes
+  const clean = trimmed
+    .toLowerCase()
+    .replace(/^[^a-z0-9]+/i, "")
+    .replace(/^(so|okay|ok|well|now|and|then|um|uh|great|cool|right)[,\s]+/i, "")
+    .trim();
+
+  if (clean.endsWith("?")) {
+    return true;
+  }
+
+  // Typical interview and meeting prompts (commands that expect talking points)
+  const interviewPromptPatterns = [
+    /\btell (me|us)\b/i,
+    /\bwalk (me|us) through\b/i,
+    /\btalk (about|to me about|to us about)\b/i,
+    /\bdescribe (a time|your|how|what)\b/i,
+    /\bexplain (how|why|what|your)\b/i,
+    /\bgive (me |us )?(an? )?example\b/i,
+    /\bshare (an? )?(example|time|experience)\b/i,
+    /\belaborate on\b/i,
+    /\bspeak to\b/i,
+    /\bwhat would you\b/i,
+    /\bhow would you\b/i,
+    /\bwhat is your\b/i,
+    /\bwhat are your\b/i,
+    /\bwhy did you\b/i,
+    /\bwhy do you\b/i,
+  ];
+
+  if (interviewPromptPatterns.some((pattern) => pattern.test(clean))) {
+    return true;
+  }
+
+  const interrogativePrefixes = [
+    "what",
+    "how",
+    "why",
+    "who",
+    "when",
+    "where",
+    "which",
+    "whose",
+    "can you",
+    "could you",
+    "would you",
+    "will you",
+    "can we",
+    "could we",
+    "should we",
+    "is there",
+    "are there",
+    "do you",
+    "did you",
+    "does this",
+    "do we",
+    "have you",
+    "tell me",
+    "tell us",
+    "walk me",
+    "walk us",
+    "explain",
+    "describe",
+  ];
+
+  return interrogativePrefixes.some((prefix) => clean.startsWith(prefix));
+}
+
+export function searchKnowledgeChunks(
+  query: string,
+  chunks: DocumentChunkInfo[],
+  topK = 4
+): DocumentChunkInfo[] {
+  if (!chunks || chunks.length === 0) return [];
+
+  const stopWords = new Set([
+    "the", "is", "at", "which", "on", "and", "a", "an", "in", "to", "for",
+    "of", "or", "by", "with", "can", "you", "tell", "about", "what", "how",
+    "could", "would", "should", "me", "my", "your", "give", "please"
+  ]);
+
+  let queryTokens = query
+    .toLowerCase()
+    .replace(/[^\w\s]/g, " ")
+    .split(/\s+/)
+    .filter((t) => t.length > 1 && !stopWords.has(t));
+
+  if (queryTokens.length === 0) {
+    queryTokens = query
+      .toLowerCase()
+      .replace(/[^\w\s]/g, " ")
+      .split(/\s+/)
+      .filter((t) => t.length > 2);
+  }
+
+  if (queryTokens.length === 0) {
+    return chunks.slice(0, topK);
+  }
+
+  const scored = chunks.map((chunk) => {
+    let score = 0;
+    const lowerContent = chunk.content.toLowerCase();
+    const lowerTitle = chunk.title.toLowerCase();
+    const lowerPath = chunk.source_path.toLowerCase();
+
+    for (const token of queryTokens) {
+      let count = 0;
+      let pos = 0;
+      while ((pos = lowerContent.indexOf(token, pos)) !== -1) {
+        count++;
+        pos += token.length;
+      }
+      score += count * 1.0;
+
+      // Heavy boost for title match
+      if (lowerTitle.includes(token)) {
+        score += 15.0;
+      }
+      // Heavy boost for file/source path match
+      if (lowerPath.includes(token)) {
+        score += 12.0;
+      }
+    }
+
+    return { chunk, score };
+  });
+
+  scored.sort((a, b) => b.score - a.score);
+
+  const matched = scored.filter((s) => s.score > 0);
+  if (matched.length > 0) {
+    return matched.slice(0, topK).map((s) => s.chunk);
+  }
+  return chunks.slice(0, topK);
+}
+
 export function useMeetingAssistant() {
   const [recordingState, setRecordingState] = useState<RecordingState>("stopped");
   const [status, setStatus] = useState<MeetingStatus>("ready");
@@ -49,6 +191,8 @@ export function useMeetingAssistant() {
   const webAudioStreamRef = useRef<MediaStream | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const animFrameRef = useRef<number | null>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const speechRecognitionRef = useRef<any>(null);
 
   const isTauri =
     typeof window !== "undefined" &&
@@ -142,7 +286,7 @@ export function useMeetingAssistant() {
       const provider = localStorage.getItem("sidekick_llm_provider") || "gemini";
       const apiKey =
         provider === "gemini"
-          ? localStorage.getItem("sidekick_gemini_key")
+          ? localStorage.getItem("sidekick_gemini_key") || import.meta.env.VITE_GEMINI_API_KEY
           : localStorage.getItem("sidekick_llm_key");
 
       if (isTauri) {
@@ -171,106 +315,142 @@ export function useMeetingAssistant() {
           setStatus("ready");
         }
       } else {
-        // Direct browser client-side streaming or simulated answer
+        // Direct browser client-side streaming
+        const candidateModels = ["gemini-3.6-flash", "gemini-3.1-flash-lite"];
+        let success = false;
+
         if (apiKey && provider === "gemini") {
-          try {
-            const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse&key=${apiKey.trim()}`;
-            const resp = await fetch(url, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                contents: [{ role: "user", parts: [{ text: `Question: ${questionText}` }] }],
-                systemInstruction: {
-                  parts: [
-                    {
-                      text: "You are Sidekick, an ultra-dense HUD meeting assistant. Answer in exactly 2-3 bullets, under 30 words total. Zero conversational filler.",
-                    },
-                  ],
-                },
-              }),
-            });
+          const relevantChunks = searchKnowledgeChunks(questionText, indexedDocs, 4);
+          const relevantContext = relevantChunks
+            .map((d, idx) => `[Source ${idx + 1}: ${d.title}]\n${d.content.slice(0, 2500)}`)
+            .join("\n\n");
 
-            if (resp.ok && resp.body) {
-              const reader = resp.body.getReader();
-              const decoder = new TextDecoder();
-              let fullText = "";
+          const promptText = relevantContext
+            ? `Knowledge Context:\n${relevantContext}\n\nQuestion:\n${questionText}`
+            : `Question: ${questionText}`;
 
-              while (true) {
-                const { done, value } = await reader.read();
-                if (done) break;
-                const chunk = decoder.decode(value);
-                for (const line of chunk.split("\n")) {
-                  if (line.startsWith("data: ")) {
-                    try {
-                      const json = JSON.parse(line.slice(6));
-                      const text = json.candidates?.[0]?.content?.parts?.[0]?.text;
-                      if (text) {
-                        fullText += text;
-                        const bullets = fullText
-                          .split("\n")
-                          .map((l) => l.replace(/^[•\-*]\s*/, "").trim())
-                          .filter(Boolean);
-                        setActiveStreamingPoint({
-                          id: "streaming",
-                          topic: "Gemini 2.5 Flash",
-                          question: questionText,
-                          bullets,
-                          wordCount: fullText.split(/\s+/).filter(Boolean).length,
-                          sources: ["Gemini Cloud"],
-                          timestamp: Date.now(),
-                        });
-                      }
-                    } catch {}
-                  }
-                }
+          const retrievedSources =
+            relevantChunks.length > 0
+              ? Array.from(new Set(relevantChunks.map((d) => d.source_path)))
+              : ["Gemini Cloud"];
+
+          const matchedTopic =
+            relevantChunks.length > 0
+              ? relevantChunks[0].title
+              : "General Knowledge";
+
+          for (const model of candidateModels) {
+            try {
+              const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse&key=${apiKey.trim()}`;
+
+              const resp = await fetch(url, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  contents: [{ role: "user", parts: [{ text: promptText }] }],
+                  systemInstruction: {
+                    parts: [
+                      {
+                        text: "You are Sidekick, an ultra-dense HUD meeting assistant for a speaker looking directly into a webcam.\nAnswer using ONLY the provided knowledge context in exactly 2-4 bullet points starting with '• '.\nStrictly under 40 words total across all bullets. Zero conversational filler.",
+                      },
+                    ],
+                  },
+                }),
+              });
+
+              if (!resp.ok) {
+                const errText = await resp.text();
+                console.warn(`Gemini model ${model} failed (${resp.status}):`, errText);
+                continue;
               }
 
-              setActiveStreamingPoint(null);
-              const finalBullets = fullText
-                .split("\n")
-                .map((l) => l.replace(/^[•\-*]\s*/, "").trim())
-                .filter(Boolean);
-              setTalkingPoints((prev) => [
-                {
-                  id: `pt-${Date.now()}`,
-                  topic: "Gemini 2.5 Flash",
-                  question: questionText,
-                  bullets: finalBullets,
-                  wordCount: fullText.split(/\s+/).filter(Boolean).length,
-                  sources: ["Gemini Cloud"],
-                  timestamp: Date.now(),
-                },
-                ...prev,
-              ]);
-              setStatus("ready");
-              return;
+              if (resp.body) {
+                const reader = resp.body.getReader();
+                const decoder = new TextDecoder();
+                let fullText = "";
+
+                while (true) {
+                  const { done, value } = await reader.read();
+                  if (done) break;
+                  const chunk = decoder.decode(value);
+                  for (const line of chunk.split("\n")) {
+                    if (line.startsWith("data: ")) {
+                      try {
+                        const json = JSON.parse(line.slice(6));
+                        const text = json.candidates?.[0]?.content?.parts?.[0]?.text;
+                        if (text) {
+                          fullText += text;
+                          const bullets = fullText
+                            .split("\n")
+                            .map((l) => l.replace(/^[•\-*]\s*/, "").trim())
+                            .filter(Boolean);
+                          setActiveStreamingPoint({
+                            id: "streaming",
+                            topic: matchedTopic,
+                            question: questionText,
+                            bullets,
+                            wordCount: fullText.split(/\s+/).filter(Boolean).length,
+                            sources: retrievedSources,
+                            timestamp: Date.now(),
+                          });
+                        }
+                      } catch {}
+                    }
+                  }
+                }
+
+                setActiveStreamingPoint(null);
+                const finalBullets = fullText
+                  .split("\n")
+                  .map((l) => l.replace(/^[•\-*]\s*/, "").trim())
+                  .filter(Boolean);
+
+                if (finalBullets.length > 0) {
+                  setTalkingPoints((prev) => [
+                    {
+                      id: `pt-${Date.now()}`,
+                      topic: matchedTopic,
+                      question: questionText,
+                      bullets: finalBullets,
+                      wordCount: fullText.split(/\s+/).filter(Boolean).length,
+                      sources: retrievedSources,
+                      timestamp: Date.now(),
+                    },
+                    ...prev,
+                  ]);
+                  setStatus("ready");
+                  success = true;
+                  return;
+                }
+              }
+            } catch (e) {
+              console.error(`Browser fetch error on ${model}:`, e);
             }
-          } catch (e) {
-            console.error("Browser direct fetch error:", e);
           }
         }
 
-        // Instant simulated response for browser preview
-        setTimeout(() => {
-          const answerPoint: TalkingPoint = {
+        if (!success) {
+          setActiveStreamingPoint(null);
+          const errorPoint: TalkingPoint = {
             id: `pt-${Date.now()}`,
-            topic: "Knowledge Base Match",
+            topic: "Inference Notice",
             question: questionText,
             bullets: [
-              "Captures remote audio loopback directly without extra virtual soundcards.",
-              "Excluded from screen shares via macOS NSWindowSharingNone.",
-              "Provides sub-300ms talking points powered by Gemini Flash.",
+              apiKey
+                ? "Gemini API temporarily experiencing high traffic spikes (503). Click Answer to retry in a moment."
+                : "No GEMINI_API_KEY detected. Please check your .env or Settings.",
+              "Knowledge base files are ready in ./knowledge.",
             ],
-            wordCount: 26,
-            sources: ["Sidekick_Product_Overview.md", "Security_and_Privacy.md"],
+            wordCount: 20,
+            sources: ["System"],
             timestamp: Date.now(),
           };
-          setTalkingPoints((prev) => [answerPoint, ...prev]);
+          setTalkingPoints((prev) => [errorPoint, ...prev]);
           setStatus("ready");
-        }, 350);
+        }
       }
     },
-    [isTauri]
+    [isTauri, indexedDocs]
   );
 
   // 3. Set up event listeners (Tauri mode)
@@ -403,10 +583,14 @@ export function useMeetingAssistant() {
   }, [isTauri, recordingState, executeQuery]);
 
   // 4. Audio Capture Controls: Start, Pause, Resume, Stop
+  const recordingStateRef = useRef<RecordingState>("stopped");
+  recordingStateRef.current = recordingState;
+
   const startCapture = useCallback(async () => {
     if (isTauri) {
       try {
-        const savedDg = localStorage.getItem("sidekick_dg_key");
+        const savedDg =
+          localStorage.getItem("sidekick_dg_key") || import.meta.env.VITE_DEEPGRAM_API_KEY;
         await invoke("start_audio_capture", {
           deviceId: selectedDevice || null,
           apiKey: savedDg ? savedDg.trim() : null,
@@ -417,7 +601,7 @@ export function useMeetingAssistant() {
         console.error("Failed to start native audio capture:", err);
       }
     } else {
-      // Browser Web Audio fallback
+      // Browser Web Audio + Web Speech API fallback
       try {
         const getUserMediaWithTimeout = async () => {
           if (!navigator.mediaDevices?.getUserMedia) {
@@ -425,7 +609,7 @@ export function useMeetingAssistant() {
           }
           const getStream = navigator.mediaDevices.getUserMedia({ audio: true });
           const timeout = new Promise<never>((_, reject) =>
-            setTimeout(() => reject(new Error("Mic prompt timed out")), 600)
+            setTimeout(() => reject(new Error("Mic prompt timed out")), 1500)
           );
           return Promise.race([getStream, timeout]);
         };
@@ -456,12 +640,71 @@ export function useMeetingAssistant() {
           const peak = avg / 128;
           setAudioLevel({
             peak: Math.min(1, peak * 1.5),
-            isSpeaking: peak > 0.1,
+            isSpeaking: peak > 0.08,
           });
           animFrameRef.current = requestAnimationFrame(checkAudio);
         };
 
         checkAudio();
+
+        // Browser Web Speech API for real-time STT in Chrome / Safari
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const SpeechRec = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+        if (SpeechRec) {
+          try {
+            const recognition = new SpeechRec();
+            recognition.continuous = true;
+            recognition.interimResults = true;
+            recognition.lang = "en-US";
+
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            recognition.onresult = (event: any) => {
+              for (let i = event.resultIndex; i < event.results.length; i++) {
+                const res = event.results[i];
+                const text = res[0].transcript.trim();
+                const isFinal = res.isFinal;
+
+                setCurrentSnippet({
+                  id: String(Date.now()),
+                  text,
+                  isFinal,
+                  timestamp: Date.now(),
+                });
+
+                if (isFinal && isQuestionLike(text)) {
+                  setDetectedQuestion(text);
+                  const currentMode =
+                    (localStorage.getItem("sidekick_ai_mode") as AiMode) || "on-demand";
+                  if (currentMode === "auto") {
+                    executeQuery(text);
+                  } else {
+                    setStatus("ready");
+                  }
+                }
+              }
+            };
+
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            recognition.onerror = (e: any) => {
+              console.warn("Browser SpeechRecognition error:", e);
+            };
+
+            recognition.onend = () => {
+              // Auto-restart if we are still in recording state
+              if (recordingStateRef.current === "recording" && speechRecognitionRef.current) {
+                try {
+                  recognition.start();
+                } catch {}
+              }
+            };
+
+            recognition.start();
+            speechRecognitionRef.current = recognition;
+          } catch (recErr) {
+            console.warn("Could not start Web SpeechRecognition:", recErr);
+          }
+        }
+
         setRecordingState("recording");
         setStatus("listening");
       } catch (err) {
@@ -481,7 +724,7 @@ export function useMeetingAssistant() {
         animFrameRef.current = intervalId as unknown as number;
       }
     }
-  }, [isTauri, selectedDevice]);
+  }, [isTauri, selectedDevice, executeQuery]);
 
   const pauseCapture = useCallback(async () => {
     if (isTauri) {
@@ -497,6 +740,11 @@ export function useMeetingAssistant() {
       if (animFrameRef.current) {
         clearInterval(animFrameRef.current);
         cancelAnimationFrame(animFrameRef.current);
+      }
+      if (speechRecognitionRef.current) {
+        try {
+          speechRecognitionRef.current.stop();
+        } catch {}
       }
     }
     setRecordingState("paused");
@@ -523,6 +771,11 @@ export function useMeetingAssistant() {
         }, 120);
         animFrameRef.current = intervalId as unknown as number;
       }
+      if (speechRecognitionRef.current) {
+        try {
+          speechRecognitionRef.current.start();
+        } catch {}
+      }
     }
     setRecordingState("recording");
     setStatus("listening");
@@ -546,6 +799,12 @@ export function useMeetingAssistant() {
       if (audioContextRef.current) {
         audioContextRef.current.close().catch(() => {});
       }
+      if (speechRecognitionRef.current) {
+        try {
+          speechRecognitionRef.current.stop();
+        } catch {}
+        speechRecognitionRef.current = null;
+      }
     }
 
     setRecordingState("stopped");
@@ -562,7 +821,9 @@ export function useMeetingAssistant() {
   // Trigger Gemini answer for current question
   const triggerAnswer = useCallback(() => {
     if (detectedQuestion) {
-      executeQuery(detectedQuestion);
+      const q = detectedQuestion;
+      setDetectedQuestion(null);
+      executeQuery(q);
     }
   }, [detectedQuestion, executeQuery]);
 
