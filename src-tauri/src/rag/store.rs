@@ -87,12 +87,24 @@ impl KnowledgeStore {
                             self.ingest_document(&file_name, &content);
                         }
                     } else if ext == "pdf" {
-                        match pdf_extract::extract_text(&file_path) {
-                            Ok(content) => {
+                        // If pre-extracted .txt companion exists, skip PDF to avoid duplicate chunks and panics
+                        let txt_twin = file_path.with_extension("txt");
+                        if txt_twin.exists() {
+                            continue;
+                        }
+
+                        let res = std::panic::catch_unwind(|| {
+                            pdf_extract::extract_text(&file_path)
+                        });
+                        match res {
+                            Ok(Ok(content)) => {
                                 self.ingest_document(&file_name, &content);
                             }
-                            Err(e) => {
+                            Ok(Err(e)) => {
                                 eprintln!("Warning: Failed to extract text from PDF {file_name}: {e}");
+                            }
+                            Err(_) => {
+                                eprintln!("Warning: PDF parser panicked on {file_name}");
                             }
                         }
                     }
@@ -151,43 +163,69 @@ impl KnowledgeStore {
                 }
             }
         } else {
-            // PDF or prose: split by paragraphs, grouping into chunks of ~180-250 words
-            let paragraphs: Vec<&str> = trimmed_content
-                .split("\n\n")
-                .map(|p| p.trim())
-                .filter(|p| !p.is_empty())
+            // PDF or prose book: split into semantic chunks of ~200-280 words, tracking chapter titles
+            let lines: Vec<&str> = trimmed_content
+                .lines()
+                .map(|l| l.trim())
+                .filter(|l| !l.is_empty())
                 .collect();
 
             let mut current_chunk = Vec::new();
-            let mut current_word_count = 0;
+            let mut current_words = 0;
             let mut chunk_index = 1;
+            let clean_source = source_name.replace(".txt", "").replace(".pdf", "");
+            let mut current_chapter = clean_source.clone();
 
-            for para in paragraphs {
-                let words = para.split_whitespace().count();
-                current_chunk.push(para);
-                current_word_count += words;
+            for line in lines {
+                let line_words = line.split_whitespace().count();
 
-                if current_word_count >= 180 {
-                    let text = current_chunk.join("\n\n");
+                // Detect chapter/part headings to provide rich chunk titles
+                if (line.starts_with("Chapter ")
+                    || line.starts_with("CHAPTER ")
+                    || line.starts_with("PART ")
+                    || line.starts_with("Part "))
+                    && line_words <= 12
+                {
+                    if !current_chunk.is_empty() {
+                        let text = current_chunk.join("\n");
+                        self.chunks.push(DocumentChunk {
+                            id: format!("{}-{}", source_name, self.chunks.len()),
+                            source_path: source_name.to_string(),
+                            title: format!("{} - {}", clean_source, current_chapter),
+                            content: text,
+                            score: 0.0,
+                        });
+                        current_chunk.clear();
+                        current_words = 0;
+                        chunk_index += 1;
+                    }
+                    current_chapter = line.to_string();
+                }
+
+                current_chunk.push(line);
+                current_words += line_words;
+
+                if current_words >= 220 {
+                    let text = current_chunk.join("\n");
                     self.chunks.push(DocumentChunk {
                         id: format!("{}-{}", source_name, self.chunks.len()),
                         source_path: source_name.to_string(),
-                        title: format!("{} (Section {})", source_name, chunk_index),
+                        title: format!("{} - {} (Part {})", clean_source, current_chapter, chunk_index),
                         content: text,
                         score: 0.0,
                     });
                     current_chunk.clear();
-                    current_word_count = 0;
+                    current_words = 0;
                     chunk_index += 1;
                 }
             }
 
             if !current_chunk.is_empty() {
-                let text = current_chunk.join("\n\n");
+                let text = current_chunk.join("\n");
                 self.chunks.push(DocumentChunk {
                     id: format!("{}-{}", source_name, self.chunks.len()),
                     source_path: source_name.to_string(),
-                    title: format!("{} (Section {})", source_name, chunk_index),
+                    title: format!("{} - {} (Part {})", clean_source, current_chapter, chunk_index),
                     content: text,
                     score: 0.0,
                 });
@@ -223,11 +261,12 @@ impl KnowledgeStore {
             .map(|chunk| {
                 let content_lower = chunk.content.to_lowercase();
                 let title_lower = chunk.title.to_lowercase();
+                let path_lower = chunk.source_path.to_lowercase();
                 let mut score = 0.0f32;
 
                 for token in &query_tokens {
-                    if title_lower.contains(token) {
-                        score += 5.0;
+                    if title_lower.contains(token) || path_lower.contains(token) {
+                        score += 10.0;
                     }
                     let occurrences = content_lower.matches(token).count();
                     if occurrences > 0 {
@@ -258,5 +297,29 @@ impl KnowledgeStore {
 
     pub fn list_chunks(&self) -> Vec<DocumentChunk> {
         self.chunks.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_knowledge_indexing() {
+        let mut store = KnowledgeStore::default();
+        store.load_from_directory("../knowledge");
+        assert!(store.total_chunks() > 500, "Expected >500 chunks, found {}", store.total_chunks());
+
+        // Test search queries
+        for query in &[
+            "How do you apply the Jobs to be Done (JTBD) framework?",
+            "What is your approach to product discovery and team leadership?",
+            "How do you escape the build trap?",
+            "Can you tell me about yourself and your background?",
+        ] {
+            let hits = store.search(query, 1);
+            assert!(!hits.is_empty(), "Expected hit for query: {}", query);
+            println!("QUERY: {} -> HIT: [{}] {}", query, hits[0].source_path, hits[0].title);
+        }
     }
 }

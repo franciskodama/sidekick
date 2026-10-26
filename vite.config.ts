@@ -10,6 +10,110 @@ import path from "node:path";
 
 const host = process.env.TAURI_DEV_HOST;
 
+function chunkDocument(sourceName: string, content: string) {
+  const trimmed = content.trim();
+  if (!trimmed) return [];
+
+  const chunks: Array<{ id: string; source_path: string; title: string; content: string }> = [];
+  const hasHeaders = trimmed.split("\n").some((l) => l.trim().startsWith("#"));
+
+  if (hasHeaders) {
+    let currentTitle = sourceName;
+    let currentLines: string[] = [];
+
+    for (const line of trimmed.split("\n")) {
+      const lineTrim = line.trim();
+      if (lineTrim.startsWith("#")) {
+        if (currentLines.length > 0) {
+          const chunkText = currentLines.join("\n").trim();
+          if (chunkText) {
+            chunks.push({
+              id: `${sourceName}-${chunks.length}`,
+              source_path: sourceName,
+              title: currentTitle,
+              content: chunkText,
+            });
+          }
+          currentLines = [];
+        }
+        currentTitle = lineTrim.replace(/^#+\s*/, "").trim();
+      } else {
+        currentLines.push(line);
+      }
+    }
+
+    if (currentLines.length > 0) {
+      const chunkText = currentLines.join("\n").trim();
+      if (chunkText) {
+        chunks.push({
+          id: `${sourceName}-${chunks.length}`,
+          source_path: sourceName,
+          title: currentTitle,
+          content: chunkText,
+        });
+      }
+    }
+  } else {
+    const lines = trimmed.split("\n").map((l) => l.trim()).filter(Boolean);
+    let currentChunk: string[] = [];
+    let currentWords = 0;
+    let chunkIndex = 1;
+    const cleanSource = sourceName.replace(/\.[^/.]+$/, "");
+    let currentChapter = cleanSource;
+
+    for (const line of lines) {
+      const lineWords = line.split(/\s+/).filter(Boolean).length;
+
+      if (
+        (line.startsWith("Chapter ") ||
+          line.startsWith("CHAPTER ") ||
+          line.startsWith("PART ") ||
+          line.startsWith("Part ")) &&
+        lineWords <= 12
+      ) {
+        if (currentChunk.length > 0) {
+          chunks.push({
+            id: `${sourceName}-${chunks.length}`,
+            source_path: sourceName,
+            title: `${cleanSource} - ${currentChapter}`,
+            content: currentChunk.join("\n"),
+          });
+          currentChunk = [];
+          currentWords = 0;
+          chunkIndex++;
+        }
+        currentChapter = line;
+      }
+
+      currentChunk.push(line);
+      currentWords += lineWords;
+
+      if (currentWords >= 220) {
+        chunks.push({
+          id: `${sourceName}-${chunks.length}`,
+          source_path: sourceName,
+          title: `${cleanSource} - ${currentChapter} (Part ${chunkIndex})`,
+          content: currentChunk.join("\n"),
+        });
+        currentChunk = [];
+        currentWords = 0;
+        chunkIndex++;
+      }
+    }
+
+    if (currentChunk.length > 0) {
+      chunks.push({
+        id: `${sourceName}-${chunks.length}`,
+        source_path: sourceName,
+        title: `${cleanSource} - ${currentChapter} (Part ${chunkIndex})`,
+        content: currentChunk.join("\n"),
+      });
+    }
+  }
+
+  return chunks;
+}
+
 const knowledgePlugin = () => ({
   name: "knowledge-docs-api",
   configureServer(server: { middlewares: { use: (route: string, handler: (req: unknown, res: { setHeader: (k: string, v: string) => void; end: (d: string) => void; statusCode?: number }) => void) => void } }) {
@@ -22,23 +126,37 @@ const knowledgePlugin = () => ({
           return;
         }
         const files = fs.readdirSync(knowledgeDir).filter((f: string) => !f.startsWith("."));
-        const docs = files.map((file: string, idx: number) => {
+        const allChunks: Array<{ id: string; source_path: string; title: string; content: string }> = [];
+
+        for (const file of files) {
           const filePath = path.join(knowledgeDir, file);
           const stat = fs.statSync(filePath);
-          const isText = file.endsWith(".md") || file.endsWith(".txt");
-          const content = isText
-            ? fs.readFileSync(filePath, "utf-8")
-            : `Indexed document (${(stat.size / (1024 * 1024)).toFixed(2)} MB)`;
+          if (!stat.isFile()) continue;
 
-          return {
-            id: `doc-${idx}`,
-            source_path: file,
-            title: file.replace(/\.[^/.]+$/, ""),
-            content,
-          };
-        });
+          // If a text companion exists for a PDF, skip the PDF to avoid duplicates
+          if (file.toLowerCase().endsWith(".pdf")) {
+            const txtTwin = file.replace(/\.pdf$/i, ".txt");
+            if (files.includes(txtTwin)) {
+              continue;
+            }
+          }
+
+          if (file.endsWith(".md") || file.endsWith(".txt")) {
+            const content = fs.readFileSync(filePath, "utf-8");
+            let displaySource = file;
+            if (file.toLowerCase().endsWith(".txt")) {
+              const pdfTwin = file.replace(/\.txt$/i, ".pdf");
+              if (files.includes(pdfTwin)) {
+                displaySource = pdfTwin;
+              }
+            }
+            const chunks = chunkDocument(displaySource, content);
+            allChunks.push(...chunks);
+          }
+        }
+
         res.setHeader("Content-Type", "application/json");
-        res.end(JSON.stringify(docs));
+        res.end(JSON.stringify(allChunks));
       } catch (err: unknown) {
         res.statusCode = 500;
         res.setHeader("Content-Type", "application/json");

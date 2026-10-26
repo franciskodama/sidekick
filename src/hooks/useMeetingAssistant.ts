@@ -98,6 +98,74 @@ function isQuestionLike(text: string): boolean {
   return interrogativePrefixes.some((prefix) => clean.startsWith(prefix));
 }
 
+export function searchKnowledgeChunks(
+  query: string,
+  chunks: DocumentChunkInfo[],
+  topK = 4
+): DocumentChunkInfo[] {
+  if (!chunks || chunks.length === 0) return [];
+
+  const stopWords = new Set([
+    "the", "is", "at", "which", "on", "and", "a", "an", "in", "to", "for",
+    "of", "or", "by", "with", "can", "you", "tell", "about", "what", "how",
+    "could", "would", "should", "me", "my", "your", "give", "please"
+  ]);
+
+  let queryTokens = query
+    .toLowerCase()
+    .replace(/[^\w\s]/g, " ")
+    .split(/\s+/)
+    .filter((t) => t.length > 1 && !stopWords.has(t));
+
+  if (queryTokens.length === 0) {
+    queryTokens = query
+      .toLowerCase()
+      .replace(/[^\w\s]/g, " ")
+      .split(/\s+/)
+      .filter((t) => t.length > 2);
+  }
+
+  if (queryTokens.length === 0) {
+    return chunks.slice(0, topK);
+  }
+
+  const scored = chunks.map((chunk) => {
+    let score = 0;
+    const lowerContent = chunk.content.toLowerCase();
+    const lowerTitle = chunk.title.toLowerCase();
+    const lowerPath = chunk.source_path.toLowerCase();
+
+    for (const token of queryTokens) {
+      let count = 0;
+      let pos = 0;
+      while ((pos = lowerContent.indexOf(token, pos)) !== -1) {
+        count++;
+        pos += token.length;
+      }
+      score += count * 1.0;
+
+      // Heavy boost for title match
+      if (lowerTitle.includes(token)) {
+        score += 15.0;
+      }
+      // Heavy boost for file/source path match
+      if (lowerPath.includes(token)) {
+        score += 12.0;
+      }
+    }
+
+    return { chunk, score };
+  });
+
+  scored.sort((a, b) => b.score - a.score);
+
+  const matched = scored.filter((s) => s.score > 0);
+  if (matched.length > 0) {
+    return matched.slice(0, topK).map((s) => s.chunk);
+  }
+  return chunks.slice(0, topK);
+}
+
 export function useMeetingAssistant() {
   const [recordingState, setRecordingState] = useState<RecordingState>("stopped");
   const [status, setStatus] = useState<MeetingStatus>("ready");
@@ -252,14 +320,24 @@ export function useMeetingAssistant() {
         let success = false;
 
         if (apiKey && provider === "gemini") {
-          const relevantDocs = indexedDocs.filter((d) => !d.content.startsWith("Indexed document ("));
-          const relevantContext = relevantDocs
-            .map((d) => `[Source: ${d.title}]\n${d.content.slice(0, 2000)}`)
+          const relevantChunks = searchKnowledgeChunks(questionText, indexedDocs, 4);
+          const relevantContext = relevantChunks
+            .map((d, idx) => `[Source ${idx + 1}: ${d.title}]\n${d.content.slice(0, 2500)}`)
             .join("\n\n");
 
           const promptText = relevantContext
             ? `Knowledge Context:\n${relevantContext}\n\nQuestion:\n${questionText}`
             : `Question: ${questionText}`;
+
+          const retrievedSources =
+            relevantChunks.length > 0
+              ? Array.from(new Set(relevantChunks.map((d) => d.source_path)))
+              : ["Gemini Cloud"];
+
+          const matchedTopic =
+            relevantChunks.length > 0
+              ? relevantChunks[0].title
+              : "General Knowledge";
 
           for (const model of candidateModels) {
             try {
@@ -273,7 +351,7 @@ export function useMeetingAssistant() {
                   systemInstruction: {
                     parts: [
                       {
-                        text: "You are Sidekick, an ultra-dense HUD meeting assistant. Answer using the provided knowledge context in exactly 2-3 bullets, under 35 words total. Zero conversational filler.",
+                        text: "You are Sidekick, an ultra-dense HUD meeting assistant for a speaker looking directly into a webcam.\nAnswer using ONLY the provided knowledge context in exactly 2-4 bullet points starting with '• '.\nStrictly under 40 words total across all bullets. Zero conversational filler.",
                       },
                     ],
                   },
@@ -308,11 +386,11 @@ export function useMeetingAssistant() {
                             .filter(Boolean);
                           setActiveStreamingPoint({
                             id: "streaming",
-                            topic: model === "gemini-3.6-flash" ? "Gemini 3.6 Flash" : "Gemini 3.1 Flash-Lite",
+                            topic: matchedTopic,
                             question: questionText,
                             bullets,
                             wordCount: fullText.split(/\s+/).filter(Boolean).length,
-                            sources: relevantDocs.length > 0 ? relevantDocs.map((d) => d.source_path) : ["Gemini Cloud"],
+                            sources: retrievedSources,
                             timestamp: Date.now(),
                           });
                         }
@@ -331,11 +409,11 @@ export function useMeetingAssistant() {
                   setTalkingPoints((prev) => [
                     {
                       id: `pt-${Date.now()}`,
-                      topic: model === "gemini-3.6-flash" ? "Gemini 3.6 Flash" : "Gemini 3.1 Flash-Lite",
+                      topic: matchedTopic,
                       question: questionText,
                       bullets: finalBullets,
                       wordCount: fullText.split(/\s+/).filter(Boolean).length,
-                      sources: relevantDocs.length > 0 ? relevantDocs.map((d) => d.source_path) : ["Gemini Cloud"],
+                      sources: retrievedSources,
                       timestamp: Date.now(),
                     },
                     ...prev,
