@@ -76,8 +76,16 @@ impl InferenceService {
         } else {
             context_chunks
                 .iter()
+                .take(2)
                 .enumerate()
-                .map(|(idx, c)| format!("[Source {}: {}]\n{}", idx + 1, c.title, c.content))
+                .map(|(idx, c)| {
+                    let snippet = if c.content.len() > 900 {
+                        &c.content[..900]
+                    } else {
+                        &c.content
+                    };
+                    format!("[Source {}: {}]\n{}", idx + 1, c.title, snippet)
+                })
                 .collect::<Vec<_>>()
                 .join("\n\n")
         };
@@ -146,27 +154,33 @@ impl InferenceService {
         point_id: &str,
         question: &str,
     ) -> Result<String, String> {
-        let client = reqwest::Client::new();
-        let models = ["gemini-3.6-flash", "gemini-3.1-flash-lite"];
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_millis(4500))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
+        let models = ["gemini-3.6-flash", "gemini-flash-lite-latest", "gemini-3.5-flash-lite"];
         let mut last_err = String::new();
 
-        let body = serde_json::json!({
-            "contents": [
-                {
-                    "role": "user",
-                    "parts": [{ "text": user_prompt }]
-                }
-            ],
-            "systemInstruction": {
-                "parts": [{ "text": system_prompt }]
-            },
-            "generationConfig": {
-                "temperature": 0.2,
-                "maxOutputTokens": 200
-            }
-        });
-
         for model in models {
+            let thinking_budget = if model == "gemini-3.6-flash" { 0 } else { 1 };
+            let body = serde_json::json!({
+                "contents": [
+                    {
+                        "role": "user",
+                        "parts": [{ "text": user_prompt }]
+                    }
+                ],
+                "systemInstruction": {
+                    "parts": [{ "text": system_prompt }]
+                },
+                "generationConfig": {
+                    "temperature": 0.1,
+                    "maxOutputTokens": 80,
+                    "thinkingConfig": {
+                        "thinkingBudget": thinking_budget
+                    }
+                }
+            });
             let url = format!(
                 "https://generativelanguage.googleapis.com/v1beta/models/{}:streamGenerateContent?alt=sse&key={}",
                 model,

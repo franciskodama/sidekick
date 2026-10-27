@@ -316,13 +316,14 @@ export function useMeetingAssistant() {
         }
       } else {
         // Direct browser client-side streaming
-        const candidateModels = ["gemini-3.6-flash", "gemini-3.1-flash-lite"];
+        const candidateModels = ["gemini-3.6-flash", "gemini-flash-lite-latest", "gemini-3.5-flash-lite"];
         let success = false;
 
         if (apiKey && provider === "gemini") {
-          const relevantChunks = searchKnowledgeChunks(questionText, indexedDocs, 4);
+          // Lean RAG retrieval: top 2 most relevant chunks sliced to 900 chars for rapid prefill
+          const relevantChunks = searchKnowledgeChunks(questionText, indexedDocs, 2);
           const relevantContext = relevantChunks
-            .map((d, idx) => `[Source ${idx + 1}: ${d.title}]\n${d.content.slice(0, 2500)}`)
+            .map((d, idx) => `[Source ${idx + 1}: ${d.title}]\n${d.content.slice(0, 900)}`)
             .join("\n\n");
 
           const promptText = relevantContext
@@ -340,11 +341,16 @@ export function useMeetingAssistant() {
               : "General Knowledge";
 
           for (const model of candidateModels) {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 4500);
+
             try {
               const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse&key=${apiKey.trim()}`;
+              const thinkingBudget = model === "gemini-3.6-flash" ? 0 : 1;
 
               const resp = await fetch(url, {
                 method: "POST",
+                signal: controller.signal,
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
                   contents: [{ role: "user", parts: [{ text: promptText }] }],
@@ -355,8 +361,17 @@ export function useMeetingAssistant() {
                       },
                     ],
                   },
+                  generationConfig: {
+                    temperature: 0.1,
+                    maxOutputTokens: 80,
+                    thinkingConfig: {
+                      thinkingBudget,
+                    },
+                  },
                 }),
               });
+
+              clearTimeout(timeoutId);
 
               if (!resp.ok) {
                 const errText = await resp.text();
