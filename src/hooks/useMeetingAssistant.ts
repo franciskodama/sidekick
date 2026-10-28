@@ -108,7 +108,8 @@ export function searchKnowledgeChunks(
   const stopWords = new Set([
     "the", "is", "at", "which", "on", "and", "a", "an", "in", "to", "for",
     "of", "or", "by", "with", "can", "you", "tell", "about", "what", "how",
-    "could", "would", "should", "me", "my", "your", "give", "please"
+    "could", "would", "should", "me", "my", "your", "give", "please",
+    "explain", "describe", "walk", "talk", "share", "speak"
   ]);
 
   let queryTokens = query
@@ -363,7 +364,7 @@ export function useMeetingAssistant() {
                   },
                   generationConfig: {
                     temperature: 0.1,
-                    maxOutputTokens: 80,
+                    maxOutputTokens: 600,
                     thinkingConfig: {
                       thinkingBudget,
                     },

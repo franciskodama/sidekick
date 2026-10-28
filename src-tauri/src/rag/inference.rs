@@ -175,7 +175,7 @@ impl InferenceService {
                 },
                 "generationConfig": {
                     "temperature": 0.1,
-                    "maxOutputTokens": 80,
+                    "maxOutputTokens": 600,
                     "thinkingConfig": {
                         "thinkingBudget": thinking_budget
                     }
