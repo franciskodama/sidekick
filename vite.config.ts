@@ -7,6 +7,8 @@ import process from "node:process";
 import fs from "node:fs";
 // @ts-expect-error type error without @types/node package
 import path from "node:path";
+// @ts-expect-error type error without @types/node package
+import { execSync } from "node:child_process";
 
 const host = process.env.TAURI_DEV_HOST;
 
@@ -133,11 +135,22 @@ const knowledgePlugin = () => ({
           const stat = fs.statSync(filePath);
           if (!stat.isFile()) continue;
 
-          // If a text companion exists for a PDF, skip the PDF to avoid duplicates
+          // If a PDF is found, ensure a text companion exists (auto-extract via PDFKit if needed)
           if (file.toLowerCase().endsWith(".pdf")) {
             const txtTwin = file.replace(/\.pdf$/i, ".txt");
-            if (files.includes(txtTwin)) {
-              continue;
+            const txtPath = path.join(knowledgeDir, txtTwin);
+            if (!files.includes(txtTwin) && !fs.existsSync(txtPath)) {
+              try {
+                execSync(
+                  `swift -e 'import Foundation; import PDFKit; if let doc = PDFDocument(url: URL(fileURLWithPath: "${filePath.replace(/"/g, '\\"')}")) { var s = ""; for i in 0..<doc.pageCount { if let p = doc.page(at: i), let t = p.string { s += t + "\\n\\n" } }; try? s.write(to: URL(fileURLWithPath: "${txtPath.replace(/"/g, '\\"')}"), atomically: true, encoding: .utf8); }'`,
+                  { timeout: 15000 }
+                );
+              } catch (e) {
+                console.warn(`[Knowledge API] Could not auto-extract PDF ${file}:`, e);
+              }
+            }
+            if (fs.existsSync(txtPath)) {
+              continue; // Handled as .txt below
             }
           }
 

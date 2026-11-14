@@ -131,7 +131,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           <select
             value={selectedDevice}
             onChange={(e) => onSelectDevice?.(e.target.value)}
-            className="w-full px-2.5 py-1.5 rounded bg-slate-900 border border-white/10 text-slate-100 focus:outline-none focus:border-sky-500"
+            className="hud-input"
           >
             {devices.length === 0 ? (
               <option value="">Default System Device</option>
@@ -207,7 +207,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 placeholder="AQ.Ab8... (or read automatically from .env)"
                 value={geminiKey}
                 onChange={(e) => setGeminiKey(e.target.value)}
-                className="w-full px-2.5 py-1.5 rounded bg-slate-900 border border-white/10 text-slate-100 placeholder:text-slate-600 focus:outline-none focus:border-amber-400"
+                className="hud-input hud-input-amber"
               />
             </div>
           ) : (
@@ -220,7 +220,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 placeholder={llmProvider === "anthropic" ? "sk-ant-..." : "sk-..."}
                 value={llmKey}
                 onChange={(e) => setLlmKey(e.target.value)}
-                className="w-full px-2.5 py-1.5 rounded bg-slate-900 border border-white/10 text-slate-100 placeholder:text-slate-600 focus:outline-none focus:border-sky-500"
+                className="hud-input"
               />
             </div>
           )}
@@ -237,7 +237,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             placeholder="2eb6... (or read automatically from .env)"
             value={deepgramKey}
             onChange={(e) => setDeepgramKey(e.target.value)}
-            className="w-full px-2.5 py-1.5 rounded bg-slate-900 border border-white/10 text-slate-100 placeholder:text-slate-600 focus:outline-none focus:border-sky-500"
+            className="hud-input"
           />
         </div>
 
